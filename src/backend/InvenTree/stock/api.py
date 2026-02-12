@@ -287,6 +287,19 @@ class StockReconcile(CreateAPI):
         serializer.is_valid(raise_exception=True)
         results = serializer.save()
 
+        # Send a Slack notification for completed reconciliations
+        from stock.notifications import notify_reconciliation_complete
+
+        location = serializer.validated_data['location']
+        adjustments = sum(1 for r in results if r['status'] == 'adjusted')
+
+        notify_reconciliation_complete(
+            location_name=location.name,
+            user_name=request.user.get_full_name() or request.user.username,
+            items_processed=len(results),
+            adjustments=adjustments,
+        )
+
         return Response(
             {
                 'success': True,
