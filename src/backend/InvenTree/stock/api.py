@@ -22,6 +22,7 @@ import common.models
 import common.settings
 import InvenTree.helpers
 import InvenTree.permissions
+from common.settings import get_global_setting
 import stock.serializers as StockSerializers
 from build.models import Build
 from build.serializers import BuildSerializer
@@ -259,6 +260,54 @@ class StockMerge(CreateAPI):
         ctx = super().get_serializer_context()
         ctx['request'] = self.request
         return ctx
+
+
+class StockReconcile(CreateAPI):
+    """API endpoint for performing stock reconciliation (cycle counting).
+
+    Accepts a list of stock items with their physically counted quantities
+    and adjusts the recorded stock levels accordingly.  This is intended for
+    mobile barcode-scanner workflows where a warehouse associate walks through
+    a location and submits counted values for each item.
+    """
+
+    queryset = StockItem.objects.none()
+    serializer_class = StockSerializers.StockReconciliationSerializer
+    role_required = 'stock.change'
+
+    def get_serializer_context(self):
+        """Extend serializer context with request."""
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+
+    def create(self, request, *args, **kwargs):
+        """Perform the stock reconciliation and return results."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        results = serializer.save()
+
+        # Send a Slack notification for completed reconciliations
+        from stock.notifications import notify_reconciliation_complete
+
+        location = serializer.validated_data['location']
+        adjustments = sum(1 for r in results if r['status'] == 'adjusted')
+
+        notify_reconciliation_complete(
+            location_name=location.name,
+            user_name=request.user.get_full_name() or request.user.username,
+            items_processed=len(results),
+            adjustments=adjustments,
+        )
+
+        return Response(
+            {
+                'success': True,
+                'items_processed': len(results),
+                'results': results,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class StockLocationFilter(FilterSet):
@@ -1701,6 +1750,7 @@ stock_api_urls = [
     path('assign/', StockAssign.as_view(), name='api-stock-assign'),
     path('merge/', StockMerge.as_view(), name='api-stock-merge'),
     path('change_status/', StockChangeStatus.as_view(), name='api-stock-change-status'),
+    path('reconcile/', StockReconcile.as_view(), name='api-stock-reconcile'),
     # StockItemTestResult API endpoints
     path(
         'test/',
